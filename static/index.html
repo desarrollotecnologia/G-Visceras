@@ -781,9 +781,13 @@
     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:1.2rem;">
       <div>
         <h2 style="color:var(--vp);margin-bottom:0.2rem;">📋 Planilla de Puntos por OPL</h2>
-        <p style="color:var(--gris);font-size:0.84rem;">Distribución de puestos por zona — solo Vísceras Rojas</p>
+        <p style="color:var(--gris);font-size:0.84rem;">Foto del día por OPL (zona/puesto): <strong>asignado</strong> no se borra al pistolear. Verás En cava / Despachado / Parcial. Puedes consultar días anteriores.</p>
       </div>
       <div style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center;">
+        <label style="font-size:0.82rem;color:var(--gris);display:flex;align-items:center;gap:0.4rem;">
+          Fecha
+          <input type="date" id="planillaFecha" onchange="onPlanillaFechaChange()" style="padding:0.4rem 0.6rem;border:1px solid var(--vc);border-radius:8px;font-size:0.85rem;">
+        </label>
         <button class="btn btn-secondary" id="btnProcesarPlanilla" onclick="procesarPlanilla()" style="padding:0.5rem 1.1rem;font-size:0.85rem;">⚙️ Procesar Planilla</button>
         <button class="btn btn-primary" onclick="exportarPlanillaPDF()" style="padding:0.5rem 1.1rem;font-size:0.85rem;">🖨️ Exportar PDF</button>
       </div>
@@ -2006,15 +2010,41 @@ function limpiarBusquedaCrudas() {
 var _planillaOplActivo = '';
 var _planillaUltimoDato = null;
 
+function _hoyISO() {
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+function fechaPlanilla() {
+  var el = document.getElementById('planillaFecha');
+  return (el && el.value) ? el.value : _hoyISO();
+}
+
+function _fmtFechaPlanilla(iso) {
+  if (!iso) return '';
+  var p = String(iso).slice(0,10).split('-');
+  if (p.length !== 3) return iso;
+  return p[2] + '/' + p[1] + '/' + p[0];
+}
+
+function onPlanillaFechaChange() {
+  if (_planillaOplActivo) {
+    procesarPlanilla();
+  }
+}
+
 function showPlanilla() {
   _hideAll();
   document.getElementById('viewPlanilla').classList.add('active');
+  var el = document.getElementById('planillaFecha');
+  if (el && !el.value) el.value = _hoyISO();
 }
 
 function procesarPlanilla() {
   var btn = document.getElementById('btnProcesarPlanilla');
+  var fecha = fechaPlanilla();
   btn.disabled = true; btn.textContent = '⏳ Procesando...';
-  showSpinner('Consolidando datos de planilla...');
+  showSpinner('Generando foto del día ' + _fmtFechaPlanilla(fecha) + '...');
 
   google.script.run
     .withSuccessHandler(function(res) {
@@ -2024,7 +2054,12 @@ function procesarPlanilla() {
         showAlert('planillaAlert','error', res ? res.message : 'Error consolidando');
         return;
       }
-      showAlert('planillaAlert','success','✅ ' + res.procesados + ' juegos procesados — Turno: ' + (res.turno||'—'));
+      var msg = res.message || (
+        '✅ Foto del día: ' + (res.procesados||0) + ' partes · asignado ' + (res.totalGeneral!=null?res.totalGeneral:(res.procesados||0)*0.25) +
+        ' · en cava ' + (res.totalEnCava!=null?res.totalEnCava:'—') +
+        ' · despachado ' + (res.totalDespachado!=null?res.totalDespachado:'—')
+      );
+      showAlert('planillaAlert','success', msg);
       cargarOPLsPlanilla();
     })
     .withFailureHandler(function(e){
@@ -2032,10 +2067,11 @@ function procesarPlanilla() {
       btn.disabled = false; btn.textContent = '⚙️ Procesar Planilla';
       showAlert('planillaAlert','error', e.message);
     })
-    .consolidarDatos();
+    .consolidarDatos(fecha);
 }
 
 function cargarOPLsPlanilla() {
+  var fecha = fechaPlanilla();
   google.script.run
     .withSuccessHandler(function(opls) {
       var cont = document.getElementById('planillaOplBtns');
@@ -2052,16 +2088,19 @@ function cargarOPLsPlanilla() {
         btn.addEventListener('click', function(){ seleccionarOPLPlanilla(this, this.getAttribute('data-opl')); });
         cont.appendChild(btn);
       });
-      // Seleccionar primero automáticamente
-      var primero = cont.querySelector('button');
-      if (primero) primero.click();
+      var prev = _planillaOplActivo;
+      var target = null;
+      if (prev) {
+        target = cont.querySelector('button[data-opl="'+prev+'"]');
+      }
+      if (!target) target = cont.querySelector('button');
+      if (target) target.click();
     })
     .withFailureHandler(function(){})
-    .getListaOPLsParaPlanilla();
+    .getListaOPLsParaPlanilla(fecha);
 }
 
 function seleccionarOPLPlanilla(btnEl, opl) {
-  // Resetear estilos
   document.querySelectorAll('#planillaOplBtns button').forEach(function(b) {
     b.style.background = 'var(--vc)'; b.style.color = 'var(--vp)';
   });
@@ -2071,6 +2110,7 @@ function seleccionarOPLPlanilla(btnEl, opl) {
 }
 
 function cargarDatosPlanilla(opl) {
+  var fecha = fechaPlanilla();
   document.getElementById('planillaGrid').innerHTML =
     '<div style="width:100%;text-align:center;padding:2rem;color:var(--gris);">⏳ Cargando...</div>';
 
@@ -2084,43 +2124,53 @@ function cargarDatosPlanilla(opl) {
       renderPlanilla(res);
     })
     .withFailureHandler(function(e){ showAlert('planillaAlert','error', e.message); })
-    .generarPlanillaPuntos(opl);
+    .generarPlanillaPuntos(opl, fecha);
+}
+
+function _colorEstado(est) {
+  if (est === 'Despachado') return '#059669';
+  if (est === 'Parcial') return '#d97706';
+  return '#2563eb';
 }
 
 function renderPlanilla(res) {
-  var hoy = new Date();
-  var fecha = String(hoy.getDate()).padStart(2,'0') + '/' +
-              String(hoy.getMonth()+1).padStart(2,'0') + '/' + hoy.getFullYear();
+  var fecha = _fmtFechaPlanilla(res.fecha || fechaPlanilla());
+  var enCava = res.totalEnCava != null ? res.totalEnCava : '—';
+  var desp = res.totalDespachado != null ? res.totalDespachado : '—';
 
   document.getElementById('planillaTitulo').textContent =
     'LISTA DE PUESTOS: VISCERAS DE SALIDA DE CAVA — ' + fecha;
   document.getElementById('planillaSubtitulo').textContent =
-    'OPL: ' + res.opl + ' | Total: ' + res.totalOPL + ' juegos | ' + res.porcentaje + '% del total';
+    'OPL: ' + res.opl + ' | Asignado: ' + res.totalOPL + ' | En cava: ' + enCava +
+    ' | Despachado: ' + desp + ' | ' + res.porcentaje + '% del total';
 
   if (!res.zonas || res.zonas.length === 0) {
     document.getElementById('planillaGrid').innerHTML =
-      '<div style="width:100%;text-align:center;padding:3rem;color:var(--gris);">Sin datos para este OPL</div>';
+      '<div style="width:100%;text-align:center;padding:3rem;color:var(--gris);">Sin datos para este OPL en ' + fecha + '</div>';
     return;
   }
 
   var html = res.zonas.map(function(z) {
     var filas = z.puestos.map(function(p) {
+      var est = p.estado || 'En cava';
       return '<tr style="border-bottom:1px solid #d1fae5;">'
-        + '<td style="padding:4px 8px;text-align:left;font-weight:500;font-size:0.8rem;">' + p.puesto + '</td>'
-        + '<td style="padding:4px 8px;text-align:center;font-weight:700;color:#259c39;font-size:0.82rem;">' + p.cantidad + '</td>'
+        + '<td style="padding:4px 8px;text-align:left;font-weight:500;font-size:0.78rem;">' + p.puesto + '</td>'
+        + '<td style="padding:4px 6px;text-align:center;font-weight:700;color:#259c39;font-size:0.8rem;">' + p.cantidad + '</td>'
+        + '<td style="padding:4px 6px;text-align:center;font-size:0.72rem;font-weight:600;color:' + _colorEstado(est) + ';">' + est + '</td>'
         + '</tr>';
     }).join('');
 
     return '<div style="background:white;border-radius:10px;box-shadow:0 2px 8px rgba(37,156,57,0.08);'
-      + 'border:1px solid #b7e4c7;overflow:hidden;min-width:170px;max-width:210px;">'
+      + 'border:1px solid #b7e4c7;overflow:hidden;min-width:200px;max-width:240px;">'
       + '<div style="background:#259c39;color:white;font-weight:700;padding:6px 10px;'
       + 'text-align:center;font-size:0.88rem;white-space:nowrap;">'
       + z.nombre + ' <span style="background:rgba(255,255,255,0.2);padding:1px 8px;border-radius:20px;">'
       + z.total + '</span></div>'
       + '<table style="width:100%;border-collapse:collapse;">'
       + '<thead><tr>'
-      + '<th style="background:#e8f5e9;padding:4px 8px;text-align:left;font-size:0.75rem;color:#374151;">Puesto</th>'
-      + '<th style="background:#e8f5e9;padding:4px 8px;text-align:center;font-size:0.75rem;color:#374151;">Cant</th>'
+      + '<th style="background:#e8f5e9;padding:4px 8px;text-align:left;font-size:0.72rem;color:#374151;">Puesto</th>'
+      + '<th style="background:#e8f5e9;padding:4px 6px;text-align:center;font-size:0.72rem;color:#374151;">Cant</th>'
+      + '<th style="background:#e8f5e9;padding:4px 6px;text-align:center;font-size:0.72rem;color:#374151;">Estado</th>'
       + '</tr></thead>'
       + '<tbody>' + filas + '</tbody>'
       + '</table></div>';
@@ -2128,20 +2178,23 @@ function renderPlanilla(res) {
 
   document.getElementById('planillaGrid').innerHTML = html;
 
-  // Resumen
   document.getElementById('planillaResumen').innerHTML =
     '<div style="background:white;border-radius:12px;padding:0.8rem 1.5rem;'
-    + 'box-shadow:0 2px 8px rgba(37,156,57,0.08);border:1px solid rgba(116,198,157,0.3);min-width:280px;">'
+    + 'box-shadow:0 2px 8px rgba(37,156,57,0.08);border:1px solid rgba(116,198,157,0.3);min-width:320px;">'
     + '<table style="border-collapse:collapse;width:100%;">'
     + '<thead><tr>'
     + '<th style="background:#259c39;color:white;padding:7px 12px;font-size:0.83rem;text-align:center;">Operador Logístico</th>'
-    + '<th style="background:#259c39;color:white;padding:7px 12px;font-size:0.83rem;text-align:center;">Total Juegos</th>'
-    + '<th style="background:#259c39;color:white;padding:7px 12px;font-size:0.83rem;text-align:center;">Participación</th>'
+    + '<th style="background:#259c39;color:white;padding:7px 10px;font-size:0.83rem;text-align:center;">Asignado</th>'
+    + '<th style="background:#259c39;color:white;padding:7px 10px;font-size:0.83rem;text-align:center;">En cava</th>'
+    + '<th style="background:#259c39;color:white;padding:7px 10px;font-size:0.83rem;text-align:center;">Despachado</th>'
+    + '<th style="background:#259c39;color:white;padding:7px 10px;font-size:0.83rem;text-align:center;">%</th>'
     + '</tr></thead>'
     + '<tbody><tr style="background:#e8f5e9;">'
     + '<td style="padding:7px 12px;text-align:center;font-weight:700;">' + res.opl + '</td>'
-    + '<td style="padding:7px 12px;text-align:center;font-weight:800;font-size:1.1rem;color:#259c39;">' + res.totalOPL + '</td>'
-    + '<td style="padding:7px 12px;text-align:center;font-weight:700;">' + res.porcentaje + '%</td>'
+    + '<td style="padding:7px 10px;text-align:center;font-weight:800;font-size:1.05rem;color:#259c39;">' + res.totalOPL + '</td>'
+    + '<td style="padding:7px 10px;text-align:center;font-weight:700;color:#2563eb;">' + enCava + '</td>'
+    + '<td style="padding:7px 10px;text-align:center;font-weight:700;color:#059669;">' + desp + '</td>'
+    + '<td style="padding:7px 10px;text-align:center;font-weight:700;">' + res.porcentaje + '%</td>'
     + '</tr></tbody>'
     + '</table></div>';
 }
@@ -2151,6 +2204,7 @@ function exportarPlanillaPDF() {
     showAlert('planillaAlert','warn','Selecciona un OPL primero.');
     return;
   }
+  var fecha = fechaPlanilla();
   showSpinner('Generando PDF...');
   google.script.run
     .withSuccessHandler(function(res) {
@@ -2169,7 +2223,7 @@ function exportarPlanillaPDF() {
       win.document.close();
     })
     .withFailureHandler(function(e){ hideSpinner(); showAlert('planillaAlert','error',e.message); })
-    .generarHTMLPlanillaPDF(_planillaOplActivo);
+    .generarHTMLPlanillaPDF(_planillaOplActivo, fecha);
 }
 
 // Cerrar modal OPL con ESC
@@ -2599,7 +2653,8 @@ function renderBacklog(backlog) {
 // MOSTRAR RESUMEN GENERAL EN EL MISMO LUGAR QUE LAS TARJETAS
 // ══════════════════════════════════════════════════════
 function mostrarResumenGeneralPlanilla() {
-  showSpinner('Cargando resumen general...');
+  var fecha = fechaPlanilla();
+  showSpinner('Cargando resumen general ' + _fmtFechaPlanilla(fecha) + '...');
   
   google.script.run
     .withSuccessHandler(function(res) {
@@ -2610,16 +2665,16 @@ function mostrarResumenGeneralPlanilla() {
       }
       
       if (!res.resumen || res.resumen.length === 0) {
-        showAlert('planillaAlert', 'warn', 'No hay datos de resumen disponibles. Procesa la planilla primero.');
+        showAlert('planillaAlert', 'warn', 'No hay datos de resumen. Procesa la planilla para esa fecha.');
         return;
       }
       
-      // Cambiar el título
-      var hoy = new Date();
-      var fecha = String(hoy.getDate()).padStart(2,'0') + '/' +
-                  String(hoy.getMonth()+1).padStart(2,'0') + '/' + hoy.getFullYear();
       document.getElementById('planillaTitulo').textContent = '📊 RESUMEN DESPACHO POR OPERADOR LOGÍSTICO';
-      document.getElementById('planillaSubtitulo').innerHTML = fecha;
+      document.getElementById('planillaSubtitulo').innerHTML =
+        _fmtFechaPlanilla(res.fecha || fecha) +
+        ' · Asignado: <strong>' + (res.totalGeneral || 0) + '</strong>' +
+        ' · En cava: <strong>' + (res.totalEnCava != null ? res.totalEnCava : '—') + '</strong>' +
+        ' · Despachado: <strong>' + (res.totalDespachado != null ? res.totalDespachado : '—') + '</strong>';
       
       var filasHtml = '';
       
@@ -2627,24 +2682,29 @@ function mostrarResumenGeneralPlanilla() {
         filasHtml += '<tr style="border-bottom:1px solid #e0e0e0;">'
           + '<td style="padding:10px 12px;text-align:left;font-weight:500;">' + item.opl + '</td>'
           + '<td style="padding:10px 12px;text-align:center;font-weight:600;">' + item.totalJuegos + '</td>'
+          + '<td style="padding:10px 12px;text-align:center;font-weight:600;color:#2563eb;">' + (item.enCava != null ? item.enCava : '—') + '</td>'
+          + '<td style="padding:10px 12px;text-align:center;font-weight:600;color:#059669;">' + (item.despachado != null ? item.despachado : '—') + '</td>'
           + '<td style="padding:10px 12px;text-align:center;font-weight:600;color:#259c39;">' + item.porcentaje + '%' + '</td>'
           + '</tr>';
       });
       
       filasHtml += '<tr style="background:#e8f5e9;font-weight:bold;border-top:2px solid #259c39;">'
-        + '<td style="padding:10px 12px;text-align:left;">📊 TOTAL GENERAL' + '</td>'
+        + '<td style="padding:10px 12px;text-align:left;">📊 TOTAL GENERAL</td>'
         + '<td style="padding:10px 12px;text-align:center;font-weight:800;">' + (res.totalGeneral || 0) + '</td>'
-        + '<td style="padding:10px 12px;text-align:center;font-weight:800;">100%' + '</td>'
+        + '<td style="padding:10px 12px;text-align:center;font-weight:800;color:#2563eb;">' + (res.totalEnCava != null ? res.totalEnCava : '—') + '</td>'
+        + '<td style="padding:10px 12px;text-align:center;font-weight:800;color:#059669;">' + (res.totalDespachado != null ? res.totalDespachado : '—') + '</td>'
+        + '<td style="padding:10px 12px;text-align:center;font-weight:800;">100%</td>'
         + '</tr>';
       
-      // Tabla con el mismo estilo que la aplicación
       var tablaHtml = '<div style="display:flex;justify-content:center;width:100%;">'
-        + '<div style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(37,156,57,0.08);border:1px solid rgba(116,198,157,0.3);overflow-x:auto;width:auto;min-width:450px;">'
+        + '<div style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(37,156,57,0.08);border:1px solid rgba(116,198,157,0.3);overflow-x:auto;width:auto;min-width:520px;">'
         + '<table style="width:100%;border-collapse:collapse;">'
         + '<thead>'
         + '<tr style="background:#259c39;color:white;">'
         + '<th style="padding:12px 16px;text-align:left;">Operador Logístico</th>'
-        + '<th style="padding:12px 16px;text-align:center;">Total Juegos</th>'
+        + '<th style="padding:12px 16px;text-align:center;">Asignado</th>'
+        + '<th style="padding:12px 16px;text-align:center;">En cava</th>'
+        + '<th style="padding:12px 16px;text-align:center;">Despachado</th>'
         + '<th style="padding:12px 16px;text-align:center;">Participación</th>'
         + '</tr>'
         + '</thead>'
@@ -2653,10 +2713,7 @@ function mostrarResumenGeneralPlanilla() {
         + '</div>'
         + '</div>';
       
-      // Colocar en el mismo grid donde van las tarjetas de puntos
       document.getElementById('planillaGrid').innerHTML = tablaHtml;
-      
-      // Limpiar el resumen del OPL individual
       document.getElementById('planillaResumen').innerHTML = '';
       
       showAlert('planillaAlert', 'success', '✅ Resumen general cargado');
@@ -2665,7 +2722,7 @@ function mostrarResumenGeneralPlanilla() {
       hideSpinner();
       showAlert('planillaAlert', 'error', e.message || 'Error cargando resumen');
     })
-    .getResumenTodosOPLs();
+    .getResumenTodosOPLs(fecha);
 }
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>

@@ -794,26 +794,97 @@ def getKPIs(opl="Todos los OPLs", filtro=None):
     return {"success": True, "kpis": kpis, "graficos": graficos, "backlog": backlog}
 
 
-def getListaOPLsParaPlanilla():
+def _planilla_pack(fecha=None, opl=None):
+    """Foto del día desde SIRT (mismo criterio que Despacho Canales)."""
+    import main as m
+    return m.build_planilla_pack(fecha=fecha, opl=opl)
+
+
+def getListaOPLsParaPlanilla(fecha=None):
+    pack = _planilla_pack(fecha=fecha)
+    opls = pack.get("opls") or []
+    if not opls:
+        state = _load_state()
+        opls = sorted(
+            {_as_str(row[1]) for row in state.get("opl_config", []) if len(row) > 1 and _as_str(row[1])}
+            | {OPL_DEFAULT}
+        )
+    return opls
+
+
+def consolidarDatos(fecha=None):
+    pack = _planilla_pack(fecha=fecha)
     state = _load_state()
-    return sorted({_as_str(row[1]) for row in state.get("opl_config", []) if len(row) > 1 and _as_str(row[1])} | {OPL_DEFAULT})
+    state["planilla_ultima_fecha"] = pack.get("fecha") or (fecha or datetime.now().strftime("%Y-%m-%d"))
+    state["planilla_ultima"] = {
+        "fecha": pack.get("fecha"),
+        "procesados": pack.get("procesados", 0),
+        "totalGeneral": pack.get("totalGeneral", 0),
+        "resumen": pack.get("resumen") or [],
+    }
+    _save_state(state)
+    return {
+        "success": True,
+        "procesados": pack.get("procesados", 0),
+        "turno": pack.get("turno") or _detectar_turno_por_dia(),
+        "fecha": pack.get("fecha"),
+        "totalGeneral": pack.get("totalGeneral", 0),
+        "totalEnCava": pack.get("totalEnCava", 0),
+        "totalDespachado": pack.get("totalDespachado", 0),
+        "fotoDia": True,
+        "message": (
+            f"Foto del día {pack.get('fecha')}: {pack.get('procesados', 0)} partes · "
+            f"asignado {pack.get('totalGeneral', 0)} · "
+            f"en cava {pack.get('totalEnCava', 0)} · despachado {pack.get('totalDespachado', 0)}"
+        ),
+    }
 
 
-def consolidarDatos():
-    return {"success": True, "procesados": contarJuegosViscerales().get("total", 0), "turno": _detectar_turno_desde_datos(_load_state())}
+def generarPlanillaPuntos(opl, fecha=None):
+    pack = _planilla_pack(fecha=fecha, opl=opl)
+    return pack
 
 
-def generarPlanillaPuntos(opl):
-    return {"success": True, "opl": opl, "totalOPL": 0, "porcentaje": 0, "zonas": []}
+def getResumenTodosOPLs(fecha=None):
+    pack = _planilla_pack(fecha=fecha)
+    return {
+        "success": True,
+        "resumen": pack.get("resumen") or [],
+        "totalGeneral": pack.get("totalGeneral", 0),
+        "fecha": pack.get("fecha"),
+        "totalEnCava": pack.get("totalEnCava", 0),
+        "totalDespachado": pack.get("totalDespachado", 0),
+    }
 
 
-def generarHTMLPlanillaPDF(opl):
-    html = f"<!doctype html><html><body><h1>Planilla de puntos</h1><p>OPL: {opl}</p></body></html>"
+def generarHTMLPlanillaPDF(opl, fecha=None):
+    pack = _planilla_pack(fecha=fecha, opl=opl)
+    filas = []
+    for z in pack.get("zonas") or []:
+        filas.append(f"<tr><th colspan='4' style='background:#259c39;color:#fff;text-align:left;padding:6px;'>{z.get('nombre')} — {z.get('total')}</th></tr>")
+        for p in z.get("puestos") or []:
+            filas.append(
+                "<tr>"
+                f"<td style='padding:4px 8px;'>{p.get('puesto')}</td>"
+                f"<td style='padding:4px 8px;text-align:center;'>{p.get('cantidad')}</td>"
+                f"<td style='padding:4px 8px;text-align:center;'>{p.get('enCava')}</td>"
+                f"<td style='padding:4px 8px;text-align:center;'>{p.get('despachado')}</td>"
+                "</tr>"
+            )
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'><title>Planilla</title></head><body>"
+        f"<h1>Planilla de puntos — {pack.get('opl')}</h1>"
+        f"<p>Fecha: {pack.get('fecha')} · Asignado: {pack.get('totalOPL')} · "
+        f"En cava: {pack.get('totalEnCava')} · Despachado: {pack.get('totalDespachado')}</p>"
+        "<table border='1' cellspacing='0' cellpadding='0' style='border-collapse:collapse;width:100%;'>"
+        "<thead><tr><th>Puesto</th><th>Cant</th><th>En cava</th><th>Despachado</th></tr></thead>"
+        f"<tbody>{''.join(filas)}</tbody></table></body></html>"
+    )
     return {"success": True, "html": html}
 
 
-def mostrarResumenGeneral():
-    return {"success": True, "resumen": [], "totalGeneral": 0}
+def mostrarResumenGeneral(fecha=None):
+    return getResumenTodosOPLs(fecha=fecha)
 
 
 def generarReporteOPL(opl, filtro=None):
